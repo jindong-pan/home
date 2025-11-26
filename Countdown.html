@@ -1,0 +1,406 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>長短音倒數計時器</title>
+    <!-- 載入 Tailwind CSS CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- 載入 Tone.js 庫 (用於產生音頻) -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.js"></script>
+    <style>
+        /* 設定字體為 Inter (Tailwind 默認) 或其他無襯線字體 */
+        body {
+            font-family: 'Inter', sans-serif;
+        }
+        /* 確保全螢幕高度，並讓內容置中 */
+        .full-screen-center {
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+    </style>
+</head>
+<body class="bg-gray-100 full-screen-center p-4">
+
+    <div id="app" class="w-full max-w-md bg-white p-6 sm:p-8 rounded-xl shadow-2xl space-y-6">
+        <h1 class="text-3xl font-bold text-center text-gray-800 border-b pb-3">
+            長短音倒數計時器
+        </h1>
+
+        <!-- 狀態訊息 -->
+        <div id="statusMessage" class="text-center p-3 rounded-lg bg-yellow-100 text-yellow-800 text-sm font-medium">
+            設定時間並點擊開始 (需點擊螢幕初始化音頻)
+        </div>
+
+        <!-- 時間顯示 -->
+        <div class="flex justify-center items-center">
+            <div id="timeDisplay" class="text-6xl sm:text-7xl font-mono font-extrabold text-indigo-600 p-4 bg-indigo-50 rounded-lg shadow-inner">
+                00:00:00
+            </div>
+        </div>
+
+        <!-- 設定時間輸入 -->
+        <div class="space-y-2">
+            <label for="durationInput" class="block text-sm font-medium text-gray-700">
+                設定倒數總時間 (分鐘, D > 0)
+            </label>
+            <input
+                id="durationInput"
+                type="number"
+                min="1"
+                value="15"
+                onchange="handleDurationChange(event)"
+                class="w-full p-3 border border-gray-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500 text-lg disabled:bg-gray-50"
+                placeholder="輸入分鐘數"
+            />
+        </div>
+
+        <!-- 控制按鈕 -->
+        <div class="flex justify-center space-x-4 pt-4">
+            <button
+                id="toggleButton"
+                onclick="toggleTimer()"
+                class="px-6 py-3 rounded-full text-white font-semibold transition duration-150 shadow-md transform hover:scale-[1.02] bg-indigo-500 hover:bg-indigo-600 focus:outline-none focus:ring-4 focus:ring-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+                開始計時
+            </button>
+            
+            <button
+                id="resetButton"
+                onclick="resetTimer()"
+                class="px-6 py-3 rounded-full bg-gray-500 text-white font-semibold hover:bg-gray-600 transition duration-150 shadow-md transform hover:scale-[1.02] focus:outline-none focus:ring-4 focus:ring-gray-500 disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+                重置
+            </button>
+        </div>
+        
+        <!-- 提醒規則 -->
+        <div class="text-sm text-gray-500 pt-4 border-t mt-4">
+            <p class="font-semibold mb-1">音頻提醒規則:</p>
+            <ul class="list-disc list-inside space-y-1">
+                <li>總時長 (D) > 20 或 D ≤ 10 分鐘: 1/4 (長音x1), 1/2 (長音x2), 3/4 (長音x3)</li>
+                <li>總時長 (10 &lt; D ≤ 20 分鐘): 僅在 1/2 處 (長音x2)</li>
+                <li>剩餘 5-1 分鐘: 分別發 5, 4, 3, 2, 1 個短音</li>
+                <li>結束時: 連續發三個長短音序列 (長-短-長)</li>
+            </ul>
+        </div>
+    </div>
+
+    <script>
+        // 全域狀態管理
+        const state = {
+            durationMinutes: 15,
+            totalSeconds: 0,
+            remainingSeconds: 0,
+            isRunning: false,
+            timerId: null,
+            isAudioReady: false,
+            playedAlerts: {}, // 用來記錄已播放的提醒，避免重複播放
+        };
+
+        // DOM 元素引用
+        const elements = {
+            timeDisplay: document.getElementById('timeDisplay'),
+            durationInput: document.getElementById('durationInput'),
+            toggleButton: document.getElementById('toggleButton'),
+            statusMessage: document.getElementById('statusMessage'),
+            app: document.getElementById('app'),
+        };
+
+        // --- Tone.js 音頻功能 ---
+
+        function getSynth() {
+            if (typeof Tone === 'undefined') return null;
+            return new Tone.Synth({
+                oscillator: { type: "sine" },
+                envelope: { attack: 0.005, decay: 0.1, sustain: 0.2, release: 0.5 },
+            }).toDestination();
+        }
+
+        async function initializeAudio() {
+            if (typeof Tone !== 'undefined' && Tone.context.state !== 'running') {
+                console.log("嘗試啟動 AudioContext...");
+                try {
+                    await Tone.start();
+                    state.isAudioReady = true;
+                    updateStatus('音頻準備就緒，計時器已啟動', 'green');
+                    console.log("AudioContext 啟動成功，狀態為: ", Tone.context.state);
+                } catch (e) {
+                    console.error("Tone.js 啟動失敗:", e);
+                    updateStatus('音頻初始化失敗，請檢查瀏覽器權限。', 'red');
+                }
+            } else if (typeof Tone !== 'undefined') {
+                state.isAudioReady = true;
+                console.log("AudioContext 已經運行或已準備就緒，狀態為: ", Tone.context.state);
+            }
+        }
+
+        function playBeep(freq, duration, count, interval = 0.3) {
+            if (!state.isAudioReady) {
+                console.warn("音頻未準備就緒，無法播放提示音。");
+                return;
+            }
+            const synth = getSynth();
+            if (!synth) return;
+
+            let time = Tone.now();
+            for (let i = 0; i < count; i++) {
+                synth.triggerAttackRelease(freq, duration, time);
+                time += interval;
+            }
+        }
+
+        function playLongBeep(count) {
+            // 長音: C5 (523.25 Hz), 0.2秒持續時間
+            playBeep(523.25, '0.2', count, 0.4);
+        }
+
+        function playShortBeep(count) {
+            // 短音: G4 (391.99 Hz), 0.08秒持續時間
+            playBeep(391.99, '0.08', count, 0.2);
+        }
+
+        function playEndBeep() {
+            // 結束時連續發三個長短音: Long-Short-Long (C5 - G4 - C5)
+            if (!state.isAudioReady) return;
+            const synth = getSynth();
+            if (!synth) return;
+
+            let time = Tone.now();
+            // Long
+            synth.triggerAttackRelease(523.25, '0.3', time);
+            time += 0.4;
+            // Short
+            synth.triggerAttackRelease(391.99, '0.1', time);
+            time += 0.2;
+            // Long
+            synth.triggerAttackRelease(523.25, '0.3', time);
+        }
+
+        // --- 介面更新功能 ---
+
+        function formatTime(seconds) {
+            const h = Math.floor(seconds / 3600);
+            const m = Math.floor((seconds % 3600) / 60);
+            const s = seconds % 60;
+            return [h, m, s].map(v => v < 10 ? "0" + v : v).join(':');
+        }
+
+        function updateDisplay() {
+            elements.timeDisplay.textContent = formatTime(state.remainingSeconds);
+            elements.durationInput.disabled = state.isRunning;
+            
+            // 更新按鈕文字和樣式
+            const button = elements.toggleButton;
+            const baseClass = "px-6 py-3 rounded-full text-white font-semibold transition duration-150 shadow-md transform hover:scale-[1.02] focus:outline-none focus:ring-4 disabled:opacity-50 disabled:cursor-not-allowed";
+
+            if (state.isRunning) {
+                button.textContent = '暫停';
+                button.className = `${baseClass} bg-red-500 hover:bg-red-600 focus:ring-red-500`;
+            } else {
+                if (state.remainingSeconds > 0 && state.totalSeconds > 0) {
+                    button.textContent = '繼續';
+                    button.className = `${baseClass} bg-green-500 hover:bg-green-600 focus:ring-green-500`;
+                } else {
+                    button.textContent = '開始計時';
+                    button.className = `${baseClass} bg-indigo-500 hover:bg-indigo-600 focus:ring-indigo-500`;
+                }
+            }
+        }
+
+        function updateStatus(message, type = 'yellow') {
+            elements.statusMessage.textContent = message;
+            elements.statusMessage.className = `text-center p-3 rounded-lg bg-${type}-100 text-${type}-800 text-sm font-medium`;
+        }
+
+        // --- 計時器邏輯 ---
+
+        function checkAndPlayAlerts() {
+            const totalMinutes = state.totalSeconds / 60;
+            const elapsedSeconds = state.totalSeconds - state.remainingSeconds;
+            const minutesLeft = Math.ceil(state.remainingSeconds / 60);
+            const totalDurationId = totalMinutes > 20 ? 'GT20' : (totalMinutes > 10 ? 'GT10LE20' : 'LE10');
+            
+            let playedLong = false;
+
+            // 1. 長音提醒 (Quarter Milestones)
+            if (state.totalSeconds > 0) {
+                let milestone = null;
+                let longBeeps = 0;
+                const quarter = Math.round(state.totalSeconds / 4);
+                
+                // 檢查是否在 1 秒內接近里程碑，以確保在計時器的延遲下也能觸發
+                const isNearMilestone = (seconds) => Math.abs(elapsedSeconds - seconds) <= 1;
+
+                if (totalMinutes > 20 || totalMinutes <= 10) {
+                    // 情況 A: D > 20 min 或 D <= 10 min
+                    // 1/4, 2/4, 3/4
+                    if (isNearMilestone(quarter * 3)) {
+                        milestone = '3/4'; longBeeps = 3;
+                    } else if (isNearMilestone(quarter * 2)) {
+                        milestone = '2/4'; longBeeps = 2;
+                    } else if (isNearMilestone(quarter)) {
+                        milestone = '1/4'; longBeeps = 1;
+                    }
+                } else if (totalMinutes > 10 && totalMinutes <= 20) {
+                    // 情況 B: 10 min < D <= 20 min
+                    // 僅在 1/2 處
+                    const half = Math.round(state.totalSeconds / 2);
+                    if (isNearMilestone(half)) {
+                        milestone = '1/2'; longBeeps = 2;
+                    }
+                }
+
+                if (milestone) {
+                    const alertKey = `long_${totalDurationId}_${milestone}`;
+                    if (!state.playedAlerts[alertKey]) {
+                        playLongBeep(longBeeps);
+                        state.playedAlerts[alertKey] = true;
+                        updateStatus(`提醒: 完成 ${milestone} 時間點 (長音 x${longBeeps})`, 'blue');
+                        playedLong = true;
+                    }
+                }
+            }
+
+            // 2. 短音提醒 (Final Minutes)
+            // 只有在長音沒有觸發的情況下，才檢查短音，避免衝突
+            if (!playedLong && minutesLeft >= 1 && minutesLeft <= 5) {
+                // 檢查是否剛好是分鐘整點 (剩餘 60, 120, 180, 240, 300 秒)
+                const targetSeconds = minutesLeft * 60;
+                
+                // 允許在目標秒數前後1秒內觸發，確保不會錯過
+                const isMinuteMark = Math.abs(state.remainingSeconds - targetSeconds) <= 1;
+                
+                if (isMinuteMark) {
+                    const shortBeeps = minutesLeft;
+                    const alertKey = `short_${minutesLeft}min`;
+
+                    if (!state.playedAlerts[alertKey]) {
+                        playShortBeep(shortBeeps);
+                        state.playedAlerts[alertKey] = true;
+                        updateStatus(`提醒: 剩餘 ${minutesLeft} 分鐘 (短音 x${shortBeeps})`, 'green');
+                    }
+                }
+            }
+        }
+
+        function updateTimer() {
+            if (!state.isRunning) return;
+
+            state.remainingSeconds--;
+
+            checkAndPlayAlerts();
+
+            if (state.remainingSeconds <= 0) {
+                clearInterval(state.timerId);
+                state.isRunning = false;
+                state.remainingSeconds = 0;
+                playEndBeep();
+                updateDisplay();
+                updateStatus('倒數計時完成！', 'green');
+                elements.durationInput.disabled = false;
+                return;
+            }
+
+            updateDisplay();
+        }
+
+        // --- 事件處理器 ---
+
+        async function toggleTimer() {
+            // 步驟 1: 嘗試初始化音頻（需要使用者點擊事件）
+            if (!state.isAudioReady) {
+                console.log("AudioContext 尚未運行，嘗試初始化...");
+                await initializeAudio();
+                if (!state.isAudioReady) {
+                    console.error("無法啟動 AudioContext，停止計時器啟動。");
+                    updateStatus('音頻初始化失敗，無法啟動計時器。', 'red');
+                    return;
+                }
+            }
+
+            // 步驟 2: 處理計時器邏輯
+            if (state.isRunning) {
+                // 暫停
+                clearInterval(state.timerId);
+                state.isRunning = false;
+                updateStatus('計時器暫停', 'yellow');
+                console.log("計時器暫停。");
+            } else {
+                if (state.remainingSeconds <= 0) {
+                    // 首次啟動或時間已結束，需要重新載入時間
+                    if (state.durationMinutes <= 0) {
+                        updateStatus('請設定有效的時間 (>0 分鐘)', 'red');
+                        return;
+                    }
+                    state.totalSeconds = state.durationMinutes * 60;
+                    state.remainingSeconds = state.totalSeconds;
+                    state.playedAlerts = {}; // 重置提醒紀錄
+                }
+                
+                // 開始/繼續
+                state.isRunning = true;
+                state.timerId = setInterval(updateTimer, 1000);
+                updateStatus('計時中...', 'blue');
+                console.log("計時器啟動/繼續。");
+            }
+            updateDisplay();
+        }
+
+        function resetTimer() {
+            clearInterval(state.timerId);
+            state.isRunning = false;
+            state.totalSeconds = 0;
+            state.remainingSeconds = 0;
+            state.playedAlerts = {};
+            
+            // 根據輸入框的當前值設定初始顯示
+            const inputMinutes = parseInt(elements.durationInput.value, 10);
+            state.durationMinutes = inputMinutes > 0 ? inputMinutes : 1;
+            elements.durationInput.value = state.durationMinutes;
+            state.remainingSeconds = state.durationMinutes * 60;
+            
+            updateDisplay();
+            updateStatus(`已重置，當前設定: ${state.durationMinutes} 分鐘`, 'yellow');
+            elements.durationInput.disabled = false;
+            console.log("計時器已重置。");
+        }
+
+        function handleDurationChange(event) {
+            const newDuration = parseInt(event.target.value, 10) || 0;
+            if (newDuration < 1) {
+                event.target.value = 1; // 至少為 1 分鐘
+            }
+            state.durationMinutes = parseInt(event.target.value, 10);
+            
+            // 只有在未運行時才更新顯示時間
+            if (!state.isRunning) {
+                state.remainingSeconds = state.durationMinutes * 60;
+                state.totalSeconds = state.durationMinutes * 60;
+                state.playedAlerts = {};
+                updateDisplay();
+                updateStatus(`設定已更新: ${state.durationMinutes} 分鐘`, 'yellow');
+            }
+        }
+        
+        // --- 初始化 ---
+        document.addEventListener('DOMContentLoaded', () => {
+            // 初始設定時間顯示
+            resetTimer(); 
+            
+            // 檢查 Tone.js 是否已加載
+            if (typeof Tone === 'undefined') {
+                updateStatus('嚴重錯誤：Tone.js 庫未加載，音頻功能完全無法使用。', 'red');
+                elements.toggleButton.disabled = true;
+                elements.resetButton.disabled = true;
+                console.error("Tone.js is undefined. Audio functionality disabled.");
+            } else {
+                 console.log("Tone.js 已加載。初始 Audio Context 狀態:", Tone.context.state);
+            }
+        });
+    </script>
+</body>
+</html>
+
