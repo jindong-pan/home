@@ -95,6 +95,7 @@ const convertToCSV = (data) => {
 
 const DownloadControls = ({ records, recordCount }) => {
     const [copyStatus, setCopyStatus] = useState('');
+    const textareaRef = useRef(null); // 新增 Ref 來指向 textarea
 
     // Memoize the CSV content calculation to only re-run when records change
     const csvContent = useMemo(() => convertToCSV(records), [records]);
@@ -105,19 +106,31 @@ const DownloadControls = ({ records, recordCount }) => {
             setTimeout(() => setCopyStatus(''), 2000);
             return;
         }
+        
+        const textarea = textareaRef.current;
+        if (!textarea) {
+             setCopyStatus('複製元件未就緒');
+             setTimeout(() => setCopyStatus(''), 3000);
+             return;
+        }
 
         try {
-            // Use Clipboard API for modern browsers
-            navigator.clipboard.writeText(csvContent);
+            // 使用 document.execCommand('copy') 在 iFrame 環境中更可靠地複製文本
+            textarea.select();
+            document.execCommand('copy'); 
+            
+            // 取消選取文字
+            textarea.setSelectionRange(0, 0); 
+            
             setCopyStatus('數據已複製到剪貼簿！');
         } catch (err) {
-            // Fallback for older browsers (由於 iFrame 限制，此處可能需要更強大的回退，但我們先嘗試標準 API)
-            console.error('無法使用 Clipboard API 複製:', err);
-            setCopyStatus('複製失敗，請手動選取');
+            console.error('複製失敗:', err);
+            // 由於 navigator.clipboard 可能失敗，我們使用更穩定的 execCommand。如果它也失敗，則提示用戶手動複製。
+            setCopyStatus('複製失敗，請手動選取文本框中的數據。');
         } finally {
             setTimeout(() => setCopyStatus(''), 3000);
         }
-    }, [csvContent, recordCount]);
+    }, [recordCount]);
 
     const handleDownload = useCallback(() => {
         if (recordCount === 0) {
@@ -174,6 +187,7 @@ const DownloadControls = ({ records, recordCount }) => {
             {/* 可複製的文字區塊 (提供給舊版瀏覽器或手動檢查) */}
             <div className="mt-4">
                 <textarea
+                    ref={textareaRef} // 綁定 ref
                     readOnly
                     value={csvContent}
                     placeholder="歷史數據將以 CSV 格式顯示在這裡..."
